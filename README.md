@@ -120,7 +120,8 @@ The `checkpoints` should be like:
 │   ├── lmdm_v0.4_hubert.onnx
 │   ├── motion_extractor.onnx
 │   ├── stitch_network.onnx
-│   └── warp_network.onnx
+│   ├── warp_network.onnx
+│   └── warp_network_opset20_openvino.onnx
 └── ditto_trt_Ampere_Plus
     ├── appearance_extractor_fp16.engine
     ├── blaze_face_fp16.engine
@@ -138,6 +139,8 @@ The `checkpoints` should be like:
 
 - The `ditto_cfg/v0.4_hubert_cfg_trt_online.pkl` is online config
 - The `ditto_cfg/v0.4_hubert_cfg_trt.pkl` is offline config
+- The refreshed ONNX bundle includes the OpenVINO-converted `warp_network_opset20_openvino.onnx`; Ditto automatically prefers it for OpenVINO GPU sessions when available.
+- For ONNX inference, `lmdm_v0.4_hubert.onnx` uses `CPUExecutionProvider` by default because its expression path collapsed under the tested OpenVINO GPU implementation. Other ONNX models keep the normal GPU-first provider order.
 
 
 ## 🚀 Inference 
