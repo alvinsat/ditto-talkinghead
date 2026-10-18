@@ -39,7 +39,7 @@ wav2feat_cfg:
 
 
 class StreamSDK:
-    def __init__(self, cfg_pkl, data_root, **kwargs):
+    def __init__(self, cfg_pkl, data_root, frame_sink=None, **kwargs):
 
         [
             avatar_registrar_cfg,
@@ -53,6 +53,7 @@ class StreamSDK:
         ] = parse_cfg(cfg_pkl, data_root, kwargs)
         
         self.default_kwargs = default_kwargs
+        self.frame_sink = frame_sink
         
         self.avatar_registrar = AvatarRegistrar(**avatar_registrar_cfg)
         self.condition_handler = ConditionHandler(**condition_handler_cfg)
@@ -218,8 +219,12 @@ class StreamSDK:
 
         # ======== Video Writer ========
         self.output_path = output_path
-        self.tmp_output_path = output_path + ".tmp.mp4"
-        self.writer = VideoWriterByImageIO(self.tmp_output_path)
+        self.tmp_output_path = output_path + ".tmp.mp4" if output_path else None
+        self.writer = (
+            VideoWriterByImageIO(self.tmp_output_path)
+            if self.frame_sink is None
+            else None
+        )
         self.writer_pbar = tqdm(desc="writer")
 
         # ======== Audio Feat Buffer ========
@@ -286,7 +291,10 @@ class StreamSDK:
             if item is None:
                 break
             res_frame_rgb = item
-            self.writer(res_frame_rgb, fmt="rgb")
+            if self.frame_sink is None:
+                self.writer(res_frame_rgb, fmt="rgb")
+            else:
+                self.frame_sink(res_frame_rgb)
             self.writer_pbar.update()
 
     def putback_worker(self):
@@ -488,10 +496,10 @@ class StreamSDK:
             thread.join()
 
         try:
-            self.writer.close()
+            if self.writer is not None:
+                self.writer.close()
+        finally:
             self.writer_pbar.close()
-        except:
-            traceback.print_exc()
 
         # Check if any worker encountered an exception
         if self.worker_exception is not None:
@@ -506,6 +514,5 @@ class StreamSDK:
                 break
             except queue.Full:
                 continue
-
 
 
