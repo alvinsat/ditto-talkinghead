@@ -34,14 +34,25 @@ class PutBack:
     def __init__(
         self,
         mask_template_path=None,
+        mask_mode="face",
     ):
-        if mask_template_path is None:
-            mask = get_mask(512, 512, 0.9, 0.9)
-            mask = np.concatenate([mask] * 3, 2)
+        if mask_mode not in {"face", "lower_face"}:
+            raise ValueError(f"Unsupported putback mask mode: {mask_mode}")
+        if mask_template_path is not None:
+            mask = cv2.imread(mask_template_path, cv2.IMREAD_COLOR)
+            if mask is None:
+                raise ValueError(f"Could not read putback mask: {mask_template_path}")
+            mask = mask.astype(np.float32) / 255.0
+            mask = mask[:, :, 0]
+        elif mask_mode == "lower_face":
+            mask = np.zeros((512, 512), dtype=np.uint8)
+            cv2.ellipse(mask, (256, 350), (190, 145), 0, 0, 360, 255, -1)
+            mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=12, sigmaY=12)
+            mask = mask.astype(np.float32) / 255.0
         else:
-            mask = cv2.imread(mask_template_path, cv2.IMREAD_COLOR).astype(np.float32) / 255.0
+            mask = get_mask(512, 512, 0.9, 0.9)[:, :, 0]
 
-        self.mask_ori_float = np.ascontiguousarray(mask)[:,:,0]
+        self.mask_ori_float = np.ascontiguousarray(mask)
         self.result_buffer = None
 
     def __call__(self, frame_rgb, render_image, M_c2o):

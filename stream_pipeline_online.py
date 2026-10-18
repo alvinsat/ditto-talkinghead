@@ -16,6 +16,12 @@ from core.atomic_components.wav2feat import Wav2Feat
 from core.atomic_components.cfg import parse_cfg, print_cfg
 
 
+class _PipelineBarrier:
+    def __init__(self, finalize_progress=False):
+        self.completed = threading.Event()
+        self.finalize_progress = finalize_progress
+
+
 """
 avatar_registrar_cfg:
     insightface_det_cfg,
@@ -39,7 +45,10 @@ wav2feat_cfg:
 
 
 class StreamSDK:
-    def __init__(self, cfg_pkl, data_root, frame_sink=None, **kwargs):
+    def __init__(
+        self, cfg_pkl, data_root, frame_sink=None,
+        putback_mask_mode="face", **kwargs
+    ):
 
         [
             avatar_registrar_cfg,
@@ -61,7 +70,7 @@ class StreamSDK:
         self.motion_stitch = MotionStitch(stitch_network_cfg)
         self.warp_f3d = WarpF3D(warp_network_cfg)
         self.decode_f3d = DecodeF3D(decoder_cfg)
-        self.putback = PutBack()
+        self.putback = PutBack(mask_mode=putback_mask_mode)
 
         self.wav2feat = Wav2Feat(**wav2feat_cfg)
 
@@ -288,6 +297,12 @@ class StreamSDK:
             except queue.Empty:
                 continue
 
+            if isinstance(item, _PipelineBarrier):
+                if item.finalize_progress:
+                    self.writer_pbar.total = self.writer_pbar.n
+                    self.writer_pbar.refresh()
+                item.completed.set()
+                continue
             if item is None:
                 break
             res_frame_rgb = item
@@ -309,6 +324,9 @@ class StreamSDK:
             try:
                 item = self.putback_queue.get(timeout=1)
             except queue.Empty:
+                continue
+            if isinstance(item, _PipelineBarrier):
+                self.writer_queue.put(item)
                 continue
             if item is None:
                 self.writer_queue.put(None)
@@ -332,6 +350,9 @@ class StreamSDK:
                 item = self.decode_f3d_queue.get(timeout=1)
             except queue.Empty:
                 continue
+            if isinstance(item, _PipelineBarrier):
+                self.putback_queue.put(item)
+                continue
             if item is None:
                 self.putback_queue.put(None)
                 break
@@ -351,6 +372,9 @@ class StreamSDK:
             try:
                 item = self.warp_f3d_queue.get(timeout=1)
             except queue.Empty:
+                continue
+            if isinstance(item, _PipelineBarrier):
+                self.decode_f3d_queue.put(item)
                 continue
             if item is None:
                 self.decode_f3d_queue.put(None)
@@ -373,6 +397,9 @@ class StreamSDK:
                 item = self.motion_stitch_queue.get(timeout=1)
             except queue.Empty:
                 continue
+            if isinstance(item, _PipelineBarrier):
+                self.warp_f3d_queue.put(item)
+                continue
             if item is None:
                 self.warp_f3d_queue.put(None)
                 break
@@ -390,7 +417,6 @@ class StreamSDK:
             self.stop_event.set()
         
     def _audio2motion_worker(self):
-        is_end = False
         seq_frames = self.audio2motion.seq_frames
         valid_clip_len = self.audio2motion.valid_clip_len
         aud_feat_dim = self.wav2feat.feat_dim
@@ -407,9 +433,10 @@ class StreamSDK:
                 item = self.audio2motion_queue.get(timeout=1)    # audio feat
             except queue.Empty:
                 continue
-            if item is None:
-                is_end = True
-            else:
+            barrier = item if isinstance(item, _PipelineBarrier) else None
+            close_after = item is None
+            is_end = barrier is not None or close_after
+            if not is_end:
                 item_buffer = np.concatenate([item_buffer, item], 0)
 
             if not is_end and item_buffer.shape[0] < valid_clip_len:
@@ -484,9 +511,11 @@ class StreamSDK:
                 local_idx -= cut_L
 
             if is_end:
-                break
-        
-        self.motion_stitch_queue.put(None)
+                if barrier is not None:
+                    self.motion_stitch_queue.put(barrier)
+                else:
+                    self.motion_stitch_queue.put(None)
+                    break
 
     def close(self):
         # flush frames
@@ -515,3 +544,28 @@ class StreamSDK:
             except queue.Full:
                 continue
 
+    def begin_progress(self):
+        self.writer_pbar.total = None
+        self.writer_pbar.reset(total=None)
+        self.writer_pbar.refresh()
+
+    def set_expected_frames(self, total):
+        self.writer_pbar.total = max(0, int(total))
+        self.writer_pbar.refresh()
+
+    def get_progress(self):
+        return self.writer_pbar.n, self.writer_pbar.total
+
+    def flush(self, finalize_progress=False):
+        barrier = _PipelineBarrier(finalize_progress=finalize_progress)
+        while not self.stop_event.is_set():
+            try:
+                self.audio2motion_queue.put(barrier, timeout=1)
+                break
+            except queue.Full:
+                continue
+        while not barrier.completed.wait(timeout=1):
+            if self.worker_exception is not None:
+                raise RuntimeError("Ditto online pipeline failed while flushing") from self.worker_exception
+            if self.stop_event.is_set():
+                raise RuntimeError("Ditto online pipeline stopped before flush completed")

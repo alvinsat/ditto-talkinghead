@@ -48,25 +48,54 @@ def load_image(image_path, max_dim=-1):
 
 
 def load_video(video_path, n_frames=-1, max_dim=-1):
-    reader = imageio.get_reader(video_path, "ffmpeg")
+    try:
+        reader = imageio.get_reader(video_path, "ffmpeg")
+    except ImportError:
+        capture = cv2.VideoCapture(video_path)
+        if not capture.isOpened():
+            capture.release()
+            raise RuntimeError(
+                f"ImageIO's FFmpeg plugin is unavailable and OpenCV could not open video: "
+                f"{video_path}"
+            )
+
+        ret = []
+        try:
+            while n_frames <= 0 or len(ret) < n_frames:
+                ok, frame_bgr = capture.read()
+                if not ok:
+                    break
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                h, w = frame_rgb.shape[:2]
+                new_h, new_w, resized = check_resize(h, w, max_dim)
+                if resized:
+                    frame_rgb = cv2.resize(frame_rgb, (new_w, new_h))
+                ret.append(frame_rgb)
+        finally:
+            capture.release()
+
+        if not ret:
+            raise RuntimeError(f"OpenCV could not decode any video frames: {video_path}")
+        return ret
 
     new_h, new_w, rsz_flag = None, None, None
 
     ret = []
-    for idx, frame_rgb in enumerate(reader):
-        if n_frames > 0 and idx >= n_frames:
-            break
+    try:
+        for idx, frame_rgb in enumerate(reader):
+            if n_frames > 0 and idx >= n_frames:
+                break
 
-        if rsz_flag is None:
-            h, w = frame_rgb.shape[:2]
-            new_h, new_w, rsz_flag = check_resize(h, w, max_dim)
+            if rsz_flag is None:
+                h, w = frame_rgb.shape[:2]
+                new_h, new_w, rsz_flag = check_resize(h, w, max_dim)
 
-        if rsz_flag:
-            frame_rgb = cv2.resize(frame_rgb, (new_w, new_h))
-        
-        ret.append(frame_rgb)
+            if rsz_flag:
+                frame_rgb = cv2.resize(frame_rgb, (new_w, new_h))
 
-    reader.close()
+            ret.append(frame_rgb)
+    finally:
+        reader.close()
     return ret
 
 
@@ -126,7 +155,6 @@ class LoopLoader:
         self.frame_idx = 0
         self.max_iter_num = max_iter_num if max_iter_num > 0 else self.item_num
     
-
 
 
 
