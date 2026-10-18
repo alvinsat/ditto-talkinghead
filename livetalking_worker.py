@@ -6,7 +6,6 @@ import threading
 import time
 import os
 
-import cv2
 import numpy as np
 import torch
 
@@ -19,21 +18,24 @@ DITTO_FRAME_SAMPLES = 640
 DITTO_STEP_SAMPLES = 5 * DITTO_FRAME_SAMPLES
 DITTO_PREFIX_SAMPLES = 2000
 DITTO_WINDOW_SAMPLES = 6480
+SPEECH_RMS_THRESHOLD = 0.003
+SPEECH_HANGOVER_SECONDS = 0.4
 
 
 class DittoLiveWorker:
     def __init__(self, args):
         self.frames = queue.Queue(maxsize=8)
-        self.audio_packets = queue.Queue(maxsize=100)
-        self.motion_audio = queue.Queue(maxsize=100)
+        self.audio_packets = queue.Queue(maxsize=25)
+        self.motion_audio = queue.Queue(maxsize=15)
         self.worker_error = None
+        self.stop_event = threading.Event()
         self.sdk = StreamSDK(
             args.cfg_pkl,
             args.data_root,
             frame_sink=self._publish_frame,
         )
-        self.sdk.setup(args.source_path, output_path=None)
-        self.stop_event = threading.Event()
+        self.sdk.setup(args.source_path, output_path=None, max_size=args.max_size)
+        self.frame_height, self.frame_width = self.sdk.source_info["img_rgb_lst"][0].shape[:2]
         self.audio_thread = threading.Thread(
             target=self._guard_worker, args=(self._drive_audio,), daemon=True
         )
@@ -52,24 +54,27 @@ class DittoLiveWorker:
             print(f"Ditto realtime worker failed: {error}", flush=True)
 
     def _publish_frame(self, frame_rgb):
-        try:
-            self.frames.put_nowait(frame_rgb)
-        except queue.Full:
+        while not self.stop_event.is_set():
             try:
-                self.frames.get_nowait()
-            except queue.Empty:
-                pass
-            self.frames.put_nowait(frame_rgb)
+                self.frames.put(frame_rgb, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
     def _drive_audio(self):
         deadline = time.monotonic()
+        last_voice_time = None
         while not self.stop_event.is_set():
             try:
                 packet = self.audio_packets.get(timeout=0.02)
             except queue.Empty:
                 packet = bytes(AUDIO_PACKET_BYTES)
             samples = np.frombuffer(packet, dtype="<i2").astype(np.float32) / 32768.0
-            self._queue_audio_for_motion(samples)
+            now = time.monotonic()
+            if float(np.sqrt(np.mean(samples * samples))) >= SPEECH_RMS_THRESHOLD:
+                last_voice_time = now
+            if last_voice_time is not None and now - last_voice_time <= SPEECH_HANGOVER_SECONDS:
+                self._queue_audio_for_motion(samples)
             deadline += 0.02
             delay = deadline - time.monotonic()
             if delay > 0:
@@ -158,32 +163,40 @@ class DittoLiveWorker:
     def _send_video(self, connection, send_lock):
         while True:
             if self.worker_error is not None:
-                with send_lock:
-                    connection.sendall(struct.pack("!I", 0))
+                try:
+                    with send_lock:
+                        connection.sendall(struct.pack("!I", 0))
+                except OSError:
+                    pass
                 return
             try:
                 frame_rgb = self.frames.get(timeout=0.2)
             except queue.Empty:
                 continue
-            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-            encoded, jpg = cv2.imencode(
-                ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85]
-            )
-            if not encoded:
-                raise RuntimeError("Could not encode Ditto frame")
-            payload = jpg.tobytes()
-            with send_lock:
-                connection.sendall(struct.pack("!I", len(payload)))
-                connection.sendall(payload)
+            payload = np.ascontiguousarray(frame_rgb).tobytes()
+            try:
+                with send_lock:
+                    connection.sendall(struct.pack("!I", len(payload)))
+                    connection.sendall(payload)
+            except OSError:
+                return
 
     def serve_client(self, connection):
         send_lock = threading.Lock()
+        try:
+            connection.sendall(struct.pack("!II", self.frame_height, self.frame_width))
+        except OSError:
+            connection.close()
+            return
         sender = threading.Thread(
             target=self._send_video, args=(connection, send_lock), daemon=True
         )
         sender.start()
         try:
-            self._receive_audio(connection)
+            try:
+                self._receive_audio(connection)
+            except OSError:
+                pass
         finally:
             try:
                 connection.shutdown(socket.SHUT_RDWR)
@@ -210,10 +223,14 @@ def main():
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--cfg-pkl", required=True)
     parser.add_argument("--source-path", required=True)
-    parser.add_argument("--cpu-threads", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--cpu-threads", type=int, default=min(4, os.cpu_count() or 1))
+    parser.add_argument("--max-size", type=int, default=1024)
     args = parser.parse_args()
 
-    torch.set_num_threads(max(1, args.cpu_threads))
+    cpu_threads = max(1, args.cpu_threads)
+    os.environ["DITTO_CPU_THREADS"] = str(cpu_threads)
+    torch.set_num_threads(cpu_threads)
+    torch.set_num_interop_threads(1)
     worker = DittoLiveWorker(args)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -228,7 +245,11 @@ def main():
                 if worker.worker_error is not None:
                     raise RuntimeError("Ditto streaming worker failed") from worker.worker_error
                 continue
-            command = connection.recv(1)
+            try:
+                command = connection.recv(1)
+            except OSError:
+                connection.close()
+                continue
             if command == b"\x00":
                 connection.sendall(b"\x01")
                 connection.close()

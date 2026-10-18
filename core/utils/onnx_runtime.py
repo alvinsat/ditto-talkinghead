@@ -324,6 +324,12 @@ def create_onnx_session(model_path, providers=None):
     _register_conda_dll_directories()
     import onnxruntime
 
+    cpu_threads = max(1, int(os.environ.get("DITTO_CPU_THREADS", "4")))
+    session_options = onnxruntime.SessionOptions()
+    session_options.intra_op_num_threads = cpu_threads
+    session_options.inter_op_num_threads = 1
+    session_options.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+
     available = set(onnxruntime.get_available_providers())
     if providers is not None:
         requested = providers
@@ -354,7 +360,11 @@ def create_onnx_session(model_path, providers=None):
             for provider in attempt
         ]
         try:
-            session = onnxruntime.InferenceSession(model_path, providers=attempt)
+            session = onnxruntime.InferenceSession(
+                model_path,
+                sess_options=session_options,
+                providers=attempt,
+            )
             logger.info(
                 "Loaded ONNX model %s with execution providers %s",
                 model_path,

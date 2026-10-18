@@ -237,7 +237,7 @@ class StreamSDK:
         self.cond_idx_start = 0 - len(self.audio_feat)
 
         # ======== Setup Worker Threads ========
-        QUEUE_MAX_SIZE = 100
+        QUEUE_MAX_SIZE = 20
         # self.QUEUE_TIMEOUT = None
 
         self.worker_exception = None
@@ -514,5 +514,4 @@ class StreamSDK:
                 break
             except queue.Full:
                 continue
-
 
