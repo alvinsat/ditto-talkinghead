@@ -3,6 +3,22 @@ import pickle
 import numpy as np
 
 
+_TRT_TO_ONNX_MODELS = {
+    "appearance_extractor_fp16.engine": "appearance_extractor.onnx",
+    "blaze_face_fp16.engine": "blaze_face.onnx",
+    "decoder_fp16.engine": "decoder.onnx",
+    "face_mesh_fp16.engine": "face_mesh.onnx",
+    "hubert_fp32.engine": "hubert.onnx",
+    "insightface_det_fp16.engine": "insightface_det.onnx",
+    "landmark106_fp16.engine": "landmark106.onnx",
+    "landmark203_fp16.engine": "landmark203.onnx",
+    "lmdm_v0.4_hubert_fp32.engine": "lmdm_v0.4_hubert.onnx",
+    "motion_extractor_fp32.engine": "motion_extractor.onnx",
+    "stitch_network_fp16.engine": "stitch_network.onnx",
+    "warp_network_fp16.engine": "warp_network_ori.onnx",
+}
+
+
 def load_pkl(pkl):
     with open(pkl, "rb") as f:
         return pickle.load(f)
@@ -13,8 +29,18 @@ def parse_cfg(cfg_pkl, data_root, replace_cfg=None):
     def _check_path(p):
         if os.path.isfile(p):
             return p
-        else:
-            return os.path.join(data_root, p)
+
+        data_root_path = os.path.join(data_root, p)
+        if os.path.isfile(data_root_path):
+            return data_root_path
+
+        onnx_model = _TRT_TO_ONNX_MODELS.get(os.path.basename(p))
+        if onnx_model is not None:
+            onnx_path = os.path.join(data_root, onnx_model)
+            if os.path.isfile(onnx_path):
+                return onnx_path
+
+        return data_root_path
 
     cfg = load_pkl(cfg_pkl)
 

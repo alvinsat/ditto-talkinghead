@@ -174,6 +174,32 @@ python scripts/cvt_onnx_to_trt.py --onnx_dir "./checkpoints/ditto_onnx" --trt_di
 
 Then run `inference.py` with `--data_root=./checkpoints/ditto_trt_custom`.
 
+### OpenVINO ONNX Runtime
+
+ONNX sessions created by Ditto prefer OpenVINO on the GPU, then fall back to
+CUDA, DirectML, and CPU providers when available. OpenVINO GPU sessions use
+FP16 by default. Set `DITTO_OPENVINO_DEVICE` or `DITTO_OPENVINO_PRECISION` to
+change those OpenVINO options. Ditto rewrites the warp network's 5D trilinear
+GridSample nodes into standard ONNX gather and interpolation operations and
+saves a separate `warp_network_opset20_openvino.onnx` model for OpenVINO. The
+original checkpoint remains unchanged; if OpenVINO cannot load the converted
+model, normal provider fallback still applies.
+
+For ONNX inference, LMDM uses `CPUExecutionProvider` by default because its
+expression output collapsed on the tested OpenVINO GPU path. Other ONNX models
+continue to use the normal GPU-first provider selection. Set
+`DITTO_LMDM_PROVIDER` to override the LMDM provider; for OpenVINO, its device
+and precision follow `DITTO_OPENVINO_DEVICE` and `DITTO_OPENVINO_PRECISION`.
+
+Run `python test_onnx_run.py` to normalize GridSample modes for ONNX Runtime and
+check provider loading for the ONNX checkpoints. For full inference, use the
+TensorRT config pickle with the ONNX checkpoint directory; Ditto resolves the
+TensorRT checkpoint filenames to their ONNX counterparts automatically:
+
+```powershell
+python inference.py --data_root .\checkpoints\ditto_onnx --cfg_pkl .\checkpoints\ditto_cfg\v0.4_hubert_cfg_trt.pkl --source_path .\example\image.png --audio_path .\example\audio.wav --output_path .\tmp\output_arc_gpu.mp4
+```
+
 
 ## ⚡ PyTorch Model
 *Based on community interest and to better support further development, we are now open-sourcing the PyTorch version of the model.*

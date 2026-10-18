@@ -1,9 +1,9 @@
 # insightface
 from __future__ import division
-import onnxruntime
 import cv2
 import numpy as np
 from skimage import transform as trans
+from ...utils.onnx_runtime import create_onnx_session
 
 
 def transform(data, center, output_size, scale, rotation):
@@ -39,11 +39,7 @@ def trans_points2d(pts, M):
 
 class Landmark106:
     def __init__(self, model_file, device="cuda"):
-        if device == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        else:
-            providers = ["CPUExecutionProvider"]
-        self.session = onnxruntime.InferenceSession(model_file, providers=providers)
+        self.session = create_onnx_session(model_file)
 
         self.input_mean = 0.0
         self.input_std = 1.0
@@ -80,4 +76,3 @@ class Landmark106:
         IM = cv2.invertAffineTransform(M)
         pred = trans_points2d(pred, IM)
         return pred
-

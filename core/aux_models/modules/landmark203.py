@@ -1,5 +1,5 @@
-import onnxruntime
 import numpy as np
+from ...utils.onnx_runtime import create_onnx_session
 
 
 def _transform_pts(pts, M):
@@ -13,11 +13,7 @@ def _transform_pts(pts, M):
     
 class Landmark203:
     def __init__(self, model_file, device="cuda"):
-        if device == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        else:
-            providers = ["CPUExecutionProvider"]
-        self.session = onnxruntime.InferenceSession(model_file, providers=providers)
+        self.session = create_onnx_session(model_file)
 
         self.dsize = 224
 

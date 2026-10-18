@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 from ..utils.load_model import load_model
@@ -18,6 +19,19 @@ def make_beta(n_timestep, cosine_s=8e-3):
 class LMDM:
     def __init__(self, model_path, device="cuda", **kwargs):
         kwargs["module_name"] = "LMDM"
+        if model_path.endswith(".onnx"):
+            provider_name = os.environ.get("DITTO_LMDM_PROVIDER", "CPUExecutionProvider")
+            if provider_name == "OpenVINOExecutionProvider":
+                provider = (
+                    provider_name,
+                    {
+                        "device_type": os.environ.get("DITTO_OPENVINO_DEVICE", "GPU"),
+                        "precision": os.environ.get("DITTO_OPENVINO_PRECISION", "FP16"),
+                    },
+                )
+            else:
+                provider = provider_name
+            kwargs.setdefault("execution_providers", [provider])
 
         self.model, self.model_type = load_model(model_path, device=device, **kwargs)
         self.device = device

@@ -1,6 +1,7 @@
 import librosa
 import numpy as np
 import math
+from tqdm import tqdm
 
 from ..aux_models.hubert_stream import HubertStreaming
 
@@ -95,15 +96,19 @@ class Wav2FeatHubert:
             np.zeros((split_len,), dtype=audio_16k.dtype),
         ], 0)
         
-        i = 0
         res_lst = []
-        while i < num_f:
+        chunk_starts = range(0, num_f, chunksize[1])
+        for i in tqdm(
+            chunk_starts,
+            total=math.ceil(num_f / chunksize[1]),
+            desc="HuBERT",
+            unit="chunk",
+        ):
             sss = int(i * 0.04 * 16000)
             eee = sss + split_len
             audio_chunk = speech_pad[sss:eee]
             valid_feat = self.__call__(audio_chunk, chunksize)
             res_lst.append(valid_feat)
-            i += chunksize[1]
         
         ret = np.concatenate(res_lst, 0)
         ret = ret[:num_f]

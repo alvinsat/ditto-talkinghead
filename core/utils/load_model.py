@@ -5,14 +5,10 @@ def load_model(model_path: str, device: str = "cuda", **kwargs):
         return model, "ori"
 
     if model_path.endswith(".onnx"):
-        # onnx
-        import onnxruntime
+        from .onnx_runtime import create_onnx_session
 
-        if device == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        else:
-            providers = ["CPUExecutionProvider"]
-        model = onnxruntime.InferenceSession(model_path, providers=providers)
+        providers = kwargs.pop("execution_providers", None)
+        model = create_onnx_session(model_path, providers=providers)
         return model, "onnx"
 
     elif model_path.endswith(".engine") or model_path.endswith(".trt"):

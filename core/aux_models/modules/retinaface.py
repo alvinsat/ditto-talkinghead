@@ -1,8 +1,8 @@
 # insightface
 from __future__ import division
-import onnxruntime
 import cv2
 import numpy as np
+from ...utils.onnx_runtime import create_onnx_session
 
 
 def distance2bbox(points, distance, max_shape=None):
@@ -55,11 +55,7 @@ def distance2kps(points, distance, max_shape=None):
 
 class RetinaFace:
     def __init__(self, model_file, device="cuda"):
-        if device == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        else:
-            providers = ["CPUExecutionProvider"]
-        self.session = onnxruntime.InferenceSession(model_file, providers=providers)
+        self.session = create_onnx_session(model_file)
 
         self.center_cache = {}
         self.nms_thresh = 0.4
@@ -212,4 +208,3 @@ class RetinaFace:
             order = order[inds + 1]
 
         return keep
-

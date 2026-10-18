@@ -51,6 +51,8 @@ class StreamSDK:
     def setup_Nd(self, N_d, fade_in=-1, fade_out=-1, ctrl_info=None):
         # for eye open at video end
         self.motion_stitch.set_Nd(N_d)
+        self.writer_pbar.total = N_d
+        self.writer_pbar.refresh()
 
         # for fade in/out alpha
         if ctrl_info is None:
@@ -198,7 +200,8 @@ class StreamSDK:
         self.output_path = output_path
         self.tmp_output_path = output_path + ".tmp.mp4"
         self.writer = VideoWriterByImageIO(self.tmp_output_path)
-        self.writer_pbar = tqdm(desc="writer")
+        self.writer_closed = False
+        self.writer_pbar = tqdm(desc="render", unit="frame")
 
         # ======== Audio Feat Buffer ========
         if self.online_mode:
@@ -267,6 +270,15 @@ class StreamSDK:
             self.writer(res_frame_rgb, fmt="rgb")
             self.writer_pbar.update()
 
+    def _put_unless_stopped(self, target_queue, item):
+        while not self.stop_event.is_set():
+            try:
+                target_queue.put(item, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     def putback_worker(self):
         try:
             self._putback_worker()
@@ -281,13 +293,14 @@ class StreamSDK:
             except queue.Empty:
                 continue
             if item is None:
-                self.writer_queue.put(None)
+                self._put_unless_stopped(self.writer_queue, None)
                 break
             frame_idx, render_img = item
             frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
             M_c2o = self.source_info["M_c2o_lst"][frame_idx]
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
-            self.writer_queue.put(res_frame_rgb)
+            if not self._put_unless_stopped(self.writer_queue, res_frame_rgb):
+                break
 
     def decode_f3d_worker(self):
         try:
@@ -303,11 +316,12 @@ class StreamSDK:
             except queue.Empty:
                 continue
             if item is None:
-                self.putback_queue.put(None)
+                self._put_unless_stopped(self.putback_queue, None)
                 break
             frame_idx, f_3d = item
             render_img = self.decode_f3d(f_3d)
-            self.putback_queue.put([frame_idx, render_img])
+            if not self._put_unless_stopped(self.putback_queue, [frame_idx, render_img]):
+                break
 
     def warp_f3d_worker(self):
         try:
@@ -323,12 +337,13 @@ class StreamSDK:
             except queue.Empty:
                 continue
             if item is None:
-                self.decode_f3d_queue.put(None)
+                self._put_unless_stopped(self.decode_f3d_queue, None)
                 break
             frame_idx, x_s, x_d = item
             f_s = self.source_info["f_s_lst"][frame_idx]
             f_3d = self.warp_f3d(f_s, x_s, x_d)
-            self.decode_f3d_queue.put([frame_idx, f_3d])
+            if not self._put_unless_stopped(self.decode_f3d_queue, [frame_idx, f_3d]):
+                break
 
     def motion_stitch_worker(self):
         try:
@@ -344,13 +359,14 @@ class StreamSDK:
             except queue.Empty:
                 continue
             if item is None:
-                self.warp_f3d_queue.put(None)
+                self._put_unless_stopped(self.warp_f3d_queue, None)
                 break
             
             frame_idx, x_d_info, ctrl_kwargs = item
             x_s_info = self.source_info["x_s_info_lst"][frame_idx]
             x_s, x_d = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
-            self.warp_f3d_queue.put([frame_idx, x_s, x_d])
+            if not self._put_unless_stopped(self.warp_f3d_queue, [frame_idx, x_s, x_d]):
+                break
 
     def audio2motion_worker(self):
         try:
@@ -379,15 +395,21 @@ class StreamSDK:
             num_frames = len(aud_cond_all)
             idx = 0
             res_kp_seq = None
-            pbar = tqdm(desc="dit")
+            pbar = tqdm(
+                total=(num_frames + valid_clip_len - 1) // valid_clip_len,
+                desc="motion",
+                unit="chunk",
+            )
             while idx < num_frames:
-                pbar.update()
+                if self.stop_event.is_set():
+                    break
                 aud_cond = aud_cond_all[idx:idx + seq_frames][None]
                 if aud_cond.shape[1] < seq_frames:
                     pad = np.stack([aud_cond[:, -1]] * (seq_frames - aud_cond.shape[1]), 1)
                     aud_cond = np.concatenate([aud_cond, pad], 1)
                 res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)
                 idx += valid_clip_len
+                pbar.update()
 
             pbar.close()
             res_kp_seq = res_kp_seq[:, :num_frames]
@@ -397,20 +419,20 @@ class StreamSDK:
 
             gen_frame_idx = 0
             for x_d_info in x_d_info_list:
+                if self.stop_event.is_set():
+                    break
                 frame_idx = _mirror_index(gen_frame_idx, self.source_info_frames)
                 ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)
 
-                while not self.stop_event.is_set():
-                    try:
-                        self.motion_stitch_queue.put([frame_idx, x_d_info, ctrl_kwargs], timeout=1)
-                        break
-                    except queue.Full:
-                        continue
+                if not self._put_unless_stopped(
+                    self.motion_stitch_queue, [frame_idx, x_d_info, ctrl_kwargs]
+                ):
+                    break
                 gen_frame_idx += 1
 
             break
 
-        self.motion_stitch_queue.put(None)
+        self._put_unless_stopped(self.motion_stitch_queue, None)
 
         
     def _audio2motion_worker(self):
@@ -478,12 +500,10 @@ class StreamSDK:
                         frame_idx = _mirror_index(gen_frame_idx, self.source_info_frames)
                         ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)
 
-                        while not self.stop_event.is_set():
-                            try:
-                                self.motion_stitch_queue.put([frame_idx, x_d_info, ctrl_kwargs], timeout=1)
-                                break
-                            except queue.Full:
-                                continue
+                        if not self._put_unless_stopped(
+                            self.motion_stitch_queue, [frame_idx, x_d_info, ctrl_kwargs]
+                        ):
+                            break
 
                         gen_frame_idx += 1
 
@@ -510,24 +530,44 @@ class StreamSDK:
             if is_end:
                 break
         
-        self.motion_stitch_queue.put(None)
+        self._put_unless_stopped(self.motion_stitch_queue, None)
 
     def close(self):
         # flush frames
-        self.audio2motion_queue.put(None)
+        self._put_unless_stopped(self.audio2motion_queue, None)
         # Wait for worker threads to finish
         for thread in self.thread_list:
             thread.join()
 
-        try:
-            self.writer.close()
-            self.writer_pbar.close()
-        except:
-            traceback.print_exc()
+        self._close_writer()
 
         # Check if any worker encountered an exception
         if self.worker_exception is not None:
             raise self.worker_exception
+
+    def _close_writer(self):
+        if getattr(self, "writer_closed", False):
+            return
+        self.writer_closed = True
+        try:
+            self.writer.close()
+        finally:
+            self.writer_pbar.close()
+
+    def cancel(self):
+        if not hasattr(self, "stop_event"):
+            return
+
+        self.stop_event.set()
+        for thread in getattr(self, "thread_list", []):
+            if thread.ident is not None:
+                thread.join()
+
+        if hasattr(self, "writer"):
+            try:
+                self._close_writer()
+            except Exception as error:
+                print(f"Warning: could not close partial video cleanly: {error}", flush=True)
         
     def run_chunk(self, audio_chunk, chunksize=(3, 5, 2)):
         # only for hubert
@@ -540,6 +580,3 @@ class StreamSDK:
                 continue
 
     
-
-
-

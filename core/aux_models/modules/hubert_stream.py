@@ -1,15 +1,10 @@
 
-import onnxruntime
+from ...utils.onnx_runtime import create_onnx_session
 
 
 class HubertStreamingONNX:
     def __init__(self, model_file, device="cuda"):
-        if device == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        else:
-            providers = ["CPUExecutionProvider"]
-        
-        self.session = onnxruntime.InferenceSession(model_file, providers=providers)
+        self.session = create_onnx_session(model_file)
 
     def forward_chunk(self, input_values):
         encoding_out = self.session.run(
@@ -18,4 +13,3 @@ class HubertStreamingONNX:
         )[0]
         return encoding_out
     
-

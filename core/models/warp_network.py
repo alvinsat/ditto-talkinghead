@@ -8,6 +8,11 @@ class WarpNetwork:
         kwargs = {
             "module_name": "WarpingNetwork",
         }
+        if model_path.lower().endswith(".onnx"):
+            from ..utils.onnx_runtime import get_openvino_warp_model_path
+
+            model_path = get_openvino_warp_model_path(model_path)
+
         self.model, self.model_type = load_model(model_path, device=device, **kwargs)
         self.device = device
 
